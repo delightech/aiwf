@@ -1,6 +1,6 @@
 # aiwf – Mastra Workflow
 
-コマース × インフルエンサー領域の他社事例を OpenAI (ChatGPT) で調査し、売上やGMVなどの数値を抽出、その結果を Slack へ通知する Mastra ワークフローです。
+ Mastra ワークフローのサンプルです。
 
 ## セットアップ
 
@@ -37,7 +37,7 @@
 ### 単発実行の例
 
 ```bash
-npm run workflow -- '"{\"focusKeyword\":\"コスメ x インフルエンサー\",\"geography\":\"APAC\",\"minExamples\":4}"'
+npm run workflow -- '"{\"focusKeyword\":\"コスメ\",\"geography\":\"APAC\",\"minExamples\":4}"'
 ```
 
 ### ワークフローの流れ
