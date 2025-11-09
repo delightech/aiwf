@@ -7,7 +7,7 @@
     "dev": "mastra dev",
     "build": "tsc -p .",
     "lint": "tsc --noEmit",
-    "workflow": "ts-node --project tsconfig.json src/run-commerce-influencer.ts",
+    "workflow": "ts-node --project tsconfig.json src/run-workflow.ts",
     "test": "npm run lint"
   },
   "repository": {

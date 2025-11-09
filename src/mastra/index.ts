@@ -1,9 +1,9 @@
 import { Mastra } from '@mastra/core';
 
-import { commerceInfluencerWorkflow } from './workflows/commerce-influencer';
+import { marketResearchWorkflow } from './workflows/market-research';
 
 export const mastra = new Mastra({
   workflows: {
-    commerceInfluencerWorkflow,
+    marketResearchWorkflow,
   },
 });
