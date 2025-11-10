@@ -69,11 +69,11 @@ const baseCaseSchema = z.object({
  * Step 2で追加される数値データ
  */
 const metricSchema = z.object({
-  metric: z.string(),              // メトリクス名(売上、GMV、CVR等)
-  value: z.string(),               // 値
-  currency: z.string().optional(), // 通貨(JPY, USD等)
-  timeframe: z.string().optional(),// 期間
-  note: z.string().optional(),     // 備考・説明
+  metric: z.string(),                         // メトリクス名(売上、GMV、CVR等)
+  value: z.string(),                          // 値
+  currency: z.string().nullable().optional(), // 通貨(JPY, USD等)
+  timeframe: z.string().optional(),           // 期間
+  note: z.string().optional(),                // 備考・説明
 });
 
 /**
@@ -128,11 +128,12 @@ const openaiClient = createOpenAI({
 const MODEL_NAME = env.OPENAI_MODEL;
 
 /**
- * 検索モデルかどうかの判定
- * 検索モデル(名前に'search'を含む)は構造化出力APIに非対応のため、
- * テキスト生成+JSONパースの方式を使用
+ * Structured Outputs API非対応モデルの判定
+ * 以下のモデルはgenerateObject APIに非対応のため、generateTextを使用:
+ * - 検索モデル (gpt-5-search-api等、名前に'search'を含む)
+ * - GPT-5シリーズ (gpt-5, gpt-5-mini等)
  */
-const isSearchModel = MODEL_NAME.includes('search');
+const isNonStructuredModel = MODEL_NAME.includes('search') || MODEL_NAME.startsWith('gpt-5');
 
 /**
  * モデル別の構造化データ生成関数
@@ -143,8 +144,8 @@ const isSearchModel = MODEL_NAME.includes('search');
  *   - generateObject APIを使用
  *   - OpenAIのStructured Outputs機能を利用
  *   - スキーマに厳密に従ったJSONを直接取得
- * 
- * 【検索モデルの場合】(gpt-5-search-api等)
+ *
+ * 【非対応モデルの場合】(gpt-5, gpt-5-mini, gpt-5-search-api等)
  *   - generateText APIを使用
  *   - プロンプトでJSON形式を指示
  *   - レスポンスをパースしてZodスキーマでバリデーション
@@ -161,8 +162,8 @@ async function generateStructuredObject<T>(params: {
   system: string;
   prompt: string;
 }): Promise<T> {
-  if (isSearchModel) {
-    // 検索モデル: 構造化出力APIに非対応のため、テキスト生成を使用
+  if (isNonStructuredModel) {
+    // 非対応モデル: 構造化出力APIに非対応のため、テキスト生成を使用
     const { text } = await generateText({
       model: openaiClient(params.model),
       system: `${params.system}
@@ -178,7 +179,10 @@ Respond with valid JSON only, no additional text.`,
       const parsed = JSON.parse(text);
       return params.schema.parse(parsed);
     } catch (error) {
-      throw new Error(`Failed to parse search model response as valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+      console.error('❌ Model response that failed to parse:');
+      console.error(text);
+      console.error('\n❌ Parse error:');
+      throw new Error(`Failed to parse non-structured model response as valid JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
     // 標準モデル: Structured Outputs APIを使用
@@ -262,16 +266,38 @@ const collectCasesStep = createStep({
       model: MODEL_NAME,              // 環境変数で指定されたモデル
       schema: caseListSchema,         // 出力データの構造定義
       system:
-        'You are a professional market research analyst. Research real-world case studies and collaborations from 2021 onward. Focus on factual information with verifiable sources. Prioritize Japan/APAC region unless specified otherwise.',
+        'You are a professional market research analyst. Research real-world case studies and collaborations from 2021 onward. Focus on factual information with verifiable sources. Prioritize Japan/APAC region unless specified otherwise. You MUST respond with a JSON object containing a "cases" array, not a bare array.',
       prompt: `Research topic: ${focusKeyword}
-Target region: ${geography}. Find at least ${minExamples} distinct case studies that match the research topic. Include:
-- Brand/company names
-- Campaign/project names  
-- Involved parties (influencers, partners, etc.)
-- Concrete details about the initiative
-- Reliable source URLs
+Target region: ${geography}. Find at least ${minExamples} distinct case studies that match the research topic.
 
-Respond in ${language === 'ja' ? 'Japanese' : 'English'}.`,
+Respond in ${language === 'ja' ? 'Japanese' : 'English'}.
+
+IMPORTANT: Your response must be a JSON object with the following exact structure:
+{
+  "cases": [
+    {
+      "brand": "Brand name",
+      "campaignName": "Campaign name",
+      "geography": "${geography}",
+      "timeframe": "2021-2023 (optional)",
+      "summary": "Detailed summary of the initiative",
+      "productFocus": "Product category (optional)",
+      "offerType": "Offer type (optional)",
+      "influencers": [
+        {
+          "name": "Influencer name",
+          "platform": "Instagram/YouTube/etc (optional)",
+          "handle": "@username (optional)",
+          "followers": "1M followers (optional)",
+          "positioning": "Fashion/Beauty/etc (optional)"
+        }
+      ],
+      "sources": ["https://source1.com", "https://source2.com"]
+    }
+  ]
+}
+
+Each case MUST include: brand, campaignName, geography, summary, and at least one influencer.`,
     });
 
     /**
@@ -335,8 +361,30 @@ const enrichCasesWithMetricsStep = createStep({
       model: MODEL_NAME,
       schema: enrichedCaseListSchema,  // メトリクス付きスキーマを指定
       system:
-        'Act as a revenue operations analyst. Enrich each case with concrete numeric KPIs (sales, GMV, conversion, ROI). Quote actual historical numbers when publicly reported and note the currency/timeframe. If unavailable, write "情報なし" and explain the gap.',
-      prompt: `Here is JSON for competitor cases: ${JSON.stringify(cases)}. Focus your numeric extraction on: ${metricFocus.join(', ')}. Write explanations in ${language === 'ja' ? 'Japanese' : 'English'}.`,
+        'Act as a revenue operations analyst. Enrich each case with concrete numeric KPIs (sales, GMV, conversion, ROI). Quote actual historical numbers when publicly reported and note the currency/timeframe. If unavailable, write "情報なし" and explain the gap. You MUST respond with a JSON object containing a "cases" array, not a bare array.',
+      prompt: `Here is JSON for competitor cases: ${JSON.stringify(cases)}. Focus your numeric extraction on: ${metricFocus.join(', ')}. Write explanations in ${language === 'ja' ? 'Japanese' : 'English'}.
+
+IMPORTANT: Your response must be a JSON object with a "cases" property containing an array, like this:
+{
+  "cases": [
+    {
+      "brand": "...",
+      "campaignName": "...",
+      "geography": "...",
+      "summary": "...",
+      "influencers": [...],
+      "metrics": [
+        {
+          "metric": "売上 or GMV or CVR",
+          "value": "actual value or 情報なし",
+          "currency": "JPY/USD (optional)",
+          "timeframe": "2021-2023 (optional)",
+          "note": "explanation if unavailable"
+        }
+      ]
+    }
+  ]
+}`,
     });
 
     /**
